@@ -1,0 +1,196 @@
+// =====================================================================
+// 1. Region of Interest (Pune)
+// =====================================================================
+
+var ROI = ee.Geometry.Rectangle([73.70,18.40,74.10,18.75]);
+
+Map.centerObject(ROI,10);
+
+Map.addLayer(ROI,{color:'red'},'Pune');
+
+// =====================================================================
+// 2. Date Range
+// =====================================================================
+
+var startDate='2023-03-01';
+var endDate='2023-05-31';
+
+// =====================================================================
+// 3. Load MODIS Night LST
+// =====================================================================
+
+var modis = ee.ImageCollection("MODIS/061/MOD11A1")
+.filterBounds(ROI)
+.filterDate(startDate,endDate);
+
+// =====================================================================
+// 4. Night Time Land Surface Temperature
+// =====================================================================
+
+var lst = modis
+.select('LST_Night_1km')
+.mean()
+.multiply(0.02)
+.subtract(273.15)
+.rename('Night_LST');
+
+Map.addLayer(
+lst,
+{
+min:20,
+max:35,
+palette:['blue','cyan','green','yellow','orange','red']
+},
+'Night LST');
+
+// =====================================================================
+// 5. Mean and Standard Deviation
+// =====================================================================
+
+var stats=lst.reduceRegion({
+
+reducer:ee.Reducer.mean().combine({
+
+reducer2:ee.Reducer.stdDev(),
+
+sharedInputs:true
+
+}),
+
+geometry:ROI,
+
+scale:1000,
+
+maxPixels:1e13
+
+});
+
+var meanLST=ee.Number(stats.get('Night_LST_mean'));
+
+var stdLST=ee.Number(stats.get('Night_LST_stdDev'));
+
+print('Mean Night LST',meanLST);
+
+print('Std Dev',stdLST);
+
+// =====================================================================
+// 6. Night Urban Heat Island
+// =====================================================================
+
+var uhi=lst.subtract(meanLST)
+
+.divide(stdLST)
+
+.rename('Night_UHI');
+
+Map.addLayer(
+
+uhi,
+
+{
+
+min:-2,
+
+max:2,
+
+palette:['blue','white','red']
+
+},
+
+'Night UHI');
+
+// =====================================================================
+// 7. UTFVI
+// =====================================================================
+
+var utfvi=lst.subtract(meanLST)
+
+.divide(lst)
+
+.rename('UTFVI');
+
+Map.addLayer(
+
+utfvi,
+
+{
+
+min:-0.05,
+
+max:0.05,
+
+palette:['green','yellow','orange','red']
+
+},
+
+'UTFVI');
+
+// =====================================================================
+// 8. Histogram
+// =====================================================================
+
+print(ui.Chart.image.histogram(lst,ROI,1000));
+
+print(ui.Chart.image.histogram(uhi,ROI,1000));
+
+print(ui.Chart.image.histogram(utfvi,ROI,1000));
+
+// =====================================================================
+// 9. Export Night LST
+// =====================================================================
+
+Export.image.toDrive({
+
+image:lst,
+
+description:'Night_LST_Pune',
+
+folder:'GEE',
+
+region:ROI,
+
+scale:1000,
+
+maxPixels:1e13
+
+});
+
+// =====================================================================
+// 10. Export Night UHI
+// =====================================================================
+
+Export.image.toDrive({
+
+image:uhi,
+
+description:'Night_UHI_Pune',
+
+folder:'GEE',
+
+region:ROI,
+
+scale:1000,
+
+maxPixels:1e13
+
+});
+
+// =====================================================================
+// 11. Export UTFVI
+// =====================================================================
+
+Export.image.toDrive({
+
+image:utfvi,
+
+description:'Night_UTFVI_Pune',
+
+folder:'GEE',
+
+region:ROI,
+
+scale:1000,
+
+maxPixels:1e13
+
+});
