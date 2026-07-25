@@ -1,196 +1,282 @@
 // =====================================================================
-// 1. Region of Interest (Pune)
+//               NIGHTTIME URBAN HEAT ISLAND ANALYSIS - PUNE
+//                       MODIS MOD11A1 (Night LST)
 // =====================================================================
 
-var ROI = ee.Geometry.Rectangle([73.70,18.40,74.10,18.75]);
+// =====================================================================
+// 1. Region of Interest (Official Pune District Boundary)
+// =====================================================================
 
-Map.centerObject(ROI,10);
+var pune = ee.FeatureCollection("FAO/GAUL/2015/level2")
+  .filter(ee.Filter.eq('ADM0_NAME', 'India'))
+  .filter(ee.Filter.eq('ADM1_NAME', 'Maharashtra'))
+  .filter(ee.Filter.eq('ADM2_NAME', 'Pune'));
 
-Map.addLayer(ROI,{color:'red'},'Pune');
+var ROI = pune.geometry();
+
+Map.centerObject(ROI, 10);
+
+Map.addLayer(
+    pune,
+    {
+      color: 'red',
+      fillColor: '00000000',
+      width: 2
+    },
+    'Pune Boundary'
+);
 
 // =====================================================================
 // 2. Date Range
 // =====================================================================
 
-var startDate='2023-03-01';
-var endDate='2023-05-31';
+var startDate = '2023-03-01';
+var endDate   = '2023-05-31';
 
 // =====================================================================
 // 3. Load MODIS Night LST
 // =====================================================================
 
 var modis = ee.ImageCollection("MODIS/061/MOD11A1")
-.filterBounds(ROI)
-.filterDate(startDate,endDate);
+              .filterBounds(ROI)
+              .filterDate(startDate, endDate);
+
+print("Number of Images :", modis.size());
 
 // =====================================================================
-// 4. Night Time Land Surface Temperature
+// 4. Compute Night Land Surface Temperature (°C)
 // =====================================================================
 
 var lst = modis
-.select('LST_Night_1km')
-.mean()
-.multiply(0.02)
-.subtract(273.15)
-.rename('Night_LST');
+            .select('LST_Night_1km')
+            .mean()
+            .multiply(0.02)
+            .subtract(273.15)
+            .rename('Night_LST')
+            .clip(ROI);
+
+// =====================================================================
+// 5. Calculate Minimum and Maximum Temperature
+// =====================================================================
+
+var minMax = lst.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: ROI,
+  scale: 1000,
+  maxPixels: 1e13
+});
+
+print("Night LST Min & Max", minMax);
+
+var minLST = ee.Number(minMax.get('Night_LST_min'));
+var maxLST = ee.Number(minMax.get('Night_LST_max'));
+
+// =====================================================================
+// 6. Display Night LST
+// =====================================================================
 
 Map.addLayer(
-lst,
-{
-min:20,
-max:35,
-palette:['blue','cyan','green','yellow','orange','red']
-},
-'Night LST');
+    lst,
+    {
+      min: minLST.getInfo(),
+      max: maxLST.getInfo(),
+      palette: [
+        '040274',
+        '2c7bb6',
+        '00a6ca',
+        '00ccbc',
+        '90eb9d',
+        'ffff8c',
+        'f9d057',
+        'f29e2e',
+        'e76818',
+        'd7191c'
+      ]
+    },
+    'Night LST (°C)'
+);
 
 // =====================================================================
-// 5. Mean and Standard Deviation
+// 7. Mean & Standard Deviation
 // =====================================================================
 
-var stats=lst.reduceRegion({
+var stats = lst.reduceRegion({
 
-reducer:ee.Reducer.mean().combine({
+  reducer: ee.Reducer.mean().combine({
 
-reducer2:ee.Reducer.stdDev(),
+    reducer2: ee.Reducer.stdDev(),
 
-sharedInputs:true
+    sharedInputs: true
 
-}),
+  }),
 
-geometry:ROI,
+  geometry: ROI,
 
-scale:1000,
+  scale: 1000,
 
-maxPixels:1e13
+  maxPixels: 1e13
 
 });
 
-var meanLST=ee.Number(stats.get('Night_LST_mean'));
+var meanLST = ee.Number(stats.get('Night_LST_mean'));
+var stdLST  = ee.Number(stats.get('Night_LST_stdDev'));
 
-var stdLST=ee.Number(stats.get('Night_LST_stdDev'));
-
-print('Mean Night LST',meanLST);
-
-print('Std Dev',stdLST);
+print("Mean Night LST", meanLST);
+print("Std Dev", stdLST);
 
 // =====================================================================
-// 6. Night Urban Heat Island
+// 8. Night Urban Heat Island
 // =====================================================================
 
-var uhi=lst.subtract(meanLST)
-
-.divide(stdLST)
-
-.rename('Night_UHI');
+var uhi = lst.subtract(meanLST)
+             .divide(stdLST)
+             .rename('Night_UHI')
+             .clip(ROI);
 
 Map.addLayer(
-
-uhi,
-
-{
-
-min:-2,
-
-max:2,
-
-palette:['blue','white','red']
-
-},
-
-'Night UHI');
+    uhi,
+    {
+      min: -2,
+      max: 2,
+      palette: [
+        '0000FF',
+        '66CCFF',
+        'FFFFFF',
+        'FFD700',
+        'FF4500',
+        '8B0000'
+      ]
+    },
+    'Night UHI'
+);
 
 // =====================================================================
-// 7. UTFVI
+// 9. UTFVI
 // =====================================================================
 
-var utfvi=lst.subtract(meanLST)
-
-.divide(lst)
-
-.rename('UTFVI');
+var utfvi = lst.subtract(meanLST)
+               .divide(lst)
+               .rename('UTFVI')
+               .clip(ROI);
 
 Map.addLayer(
-
-utfvi,
-
-{
-
-min:-0.05,
-
-max:0.05,
-
-palette:['green','yellow','orange','red']
-
-},
-
-'UTFVI');
-
-// =====================================================================
-// 8. Histogram
-// =====================================================================
-
-print(ui.Chart.image.histogram(lst,ROI,1000));
-
-print(ui.Chart.image.histogram(uhi,ROI,1000));
-
-print(ui.Chart.image.histogram(utfvi,ROI,1000));
+    utfvi,
+    {
+      min: -0.05,
+      max: 0.05,
+      palette: [
+        '006400',
+        '00FF00',
+        'FFFF00',
+        'FFA500',
+        'FF0000',
+        '800000'
+      ]
+    },
+    'UTFVI'
+);
 
 // =====================================================================
-// 9. Export Night LST
+// 10. Histograms
+// =====================================================================
+
+print(
+ui.Chart.image.histogram({
+  image: lst,
+  region: ROI,
+  scale: 1000
+}).setOptions({
+  title: 'Night LST Histogram'
+})
+);
+
+print(
+ui.Chart.image.histogram({
+  image: uhi,
+  region: ROI,
+  scale: 1000
+}).setOptions({
+  title: 'Night UHI Histogram'
+})
+);
+
+print(
+ui.Chart.image.histogram({
+  image: utfvi,
+  region: ROI,
+  scale: 1000
+}).setOptions({
+  title: 'UTFVI Histogram'
+})
+);
+
+// =====================================================================
+// 11. Export Night LST
 // =====================================================================
 
 Export.image.toDrive({
 
-image:lst,
+  image: lst,
 
-description:'Night_LST_Pune',
+  description: 'Night_LST_Pune',
 
-folder:'GEE',
+  folder: 'GEE',
 
-region:ROI,
+  region: ROI,
 
-scale:1000,
+  scale: 1000,
 
-maxPixels:1e13
+  maxPixels: 1e13
 
 });
 
 // =====================================================================
-// 10. Export Night UHI
+// 12. Export Night UHI
 // =====================================================================
 
 Export.image.toDrive({
 
-image:uhi,
+  image: uhi,
 
-description:'Night_UHI_Pune',
+  description: 'Night_UHI_Pune',
 
-folder:'GEE',
+  folder: 'GEE',
 
-region:ROI,
+  region: ROI,
 
-scale:1000,
+  scale: 1000,
 
-maxPixels:1e13
+  maxPixels: 1e13
 
 });
 
 // =====================================================================
-// 11. Export UTFVI
+// 13. Export UTFVI
 // =====================================================================
 
 Export.image.toDrive({
 
-image:utfvi,
+  image: utfvi,
 
-description:'Night_UTFVI_Pune',
+  description: 'Night_UTFVI_Pune',
 
-folder:'GEE',
+  folder: 'GEE',
 
-region:ROI,
+  region: ROI,
 
-scale:1000,
+  scale: 1000,
 
-maxPixels:1e13
+  maxPixels: 1e13
 
 });
+
+// =====================================================================
+// 14. Print Statistics
+// =====================================================================
+
+print("------------------------------------");
+print("Night LST Minimum (°C)", minLST);
+print("Night LST Maximum (°C)", maxLST);
+print("Night LST Mean (°C)", meanLST);
+print("Night LST Std Dev", stdLST);
+print("------------------------------------");
