@@ -1,0 +1,118 @@
+// ==============================================================================
+// PMRDA 16-PARAMETER ANALYSIS SCRIPT (2000 - 2025)
+// ==============================================================================
+
+// 1. Define ROI & Map Options
+var pmrda = ee.FeatureCollection("projects/gen-lang-client-0020505018/assets/Takula_Boundary");
+Map.centerObject(pmrda, 10);
+Map.setOptions('ROADMAP'); // Enforces light mode so data remains visible
+
+// Draw a bright red boundary to confirm ROI
+var outline = ee.Image().byte().paint({featureCollection: pmrda, color: 1, width: 3});
+Map.addLayer(outline, {palette: ['red']}, 'PMRDA Boundary');
+
+// ==============================================================================
+// CORE HARMONIZATION FUNCTION (Handles Landsat 5 and Landsat 8)
+// ==============================================================================
+function getLandsat(year) {
+  var collection;
+  var bands;
+  
+  // Use Landsat 5 for 2000, 2005, 2010. Use Landsat 8 for 2015, 2020, 2025.
+  if (year < 2013) {
+    collection = "LANDSAT/LT05/C02/T1_L2";
+    bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7', 'ST_B6']; // L5 Bands
+  } else {
+    collection = "LANDSAT/LC08/C02/T1_L2";
+    bands = ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'ST_B10']; // L8 Bands
+  }
+
+  // Load the dataset for the requested year
+  var img = ee.ImageCollection(collection)
+    .filterBounds(pmrda)
+    .filterDate(year + '-01-01', year + '-12-31')
+    .filter(ee.Filter.lt('CLOUD_COVER', 15))
+    .median()
+    .select(bands, ['Blue', 'Green', 'Red', 'NIR', 'SWIR1', 'SWIR2', 'Thermal']) // Rename to standard names
+    .clip(pmrda);
+
+  // Apply C02 scaling factors
+  var opt = img.select(['Blue', 'Green', 'Red', 'NIR', 'SWIR1', 'SWIR2']).multiply(0.0000275).add(-0.2);
+  var therm = img.select('Thermal').multiply(0.00341802).add(149.0).subtract(273.15).rename('BT'); // 13. Brightness Temp
+
+  // OPTICAL INDICES
+  var ndvi = opt.normalizedDifference(['NIR', 'Red']).rename('NDVI'); // 2. NDVI
+  var ndbi = opt.normalizedDifference(['SWIR1', 'NIR']).rename('NDBI'); // 3. NDBI
+  var ndwi = opt.normalizedDifference(['Green', 'NIR']).rename('NDWI'); // 15. NDWI
+  var mndvi = opt.normalizedDifference(['Green', 'SWIR1']).rename('MNDVI'); // 4. MNDVI
+  
+  var savi = opt.expression('((NIR - R) / (NIR + R + 0.5)) * 1.5', { // 16. SAVI
+    'NIR': opt.select('NIR'), 'R': opt.select('Red')
+  }).rename('SAVI');
+
+  var albedo = opt.expression( // 10. Surface Albedo
+    '(0.356*Blue) + (0.130*Red) + (0.373*NIR) + (0.085*SWIR1) + (0.072*SWIR2) - 0.0018', {
+      'Blue': opt.select('Blue'), 'Red': opt.select('Red'), 'NIR': opt.select('NIR'),
+      'SWIR1': opt.select('SWIR1'), 'SWIR2': opt.select('SWIR2')
+    }).rename('Albedo');
+
+  // THERMAL INDICES (LST & Emissivity)
+  var fvc = ndvi.subtract(0.2).divide(0.3).clamp(0, 1).pow(2); 
+  var emiss = fvc.multiply(0.004).add(0.986).rename('Emissivity'); // 12. Emissivity
+
+  var lst = therm.expression( // 1. LST
+    'BT / (1 + (0.00115 * BT / 1.4388) * log(E))', {
+      'BT': therm, 'E': emiss
+    }).rename('LST');
+
+  // 14. Urban TFVI
+  var lstStats = lst.reduceRegion({
+    reducer: ee.Reducer.mean().combine(ee.Reducer.stdDev(), null, true),
+    geometry: pmrda, scale: 300, maxPixels: 1e10
+  });
+  var tfvi = lst.subtract(ee.Number(lstStats.get('LST_mean')))
+                .divide(ee.Number(lstStats.get('LST_stdDev'))).rename('TFVI');
+
+  return opt.addBands([ndvi, ndbi, ndwi, mndvi, savi, albedo, therm, emiss, lst, tfvi]);
+}
+
+// Generate harmonized image data for all 5-year intervals
+var data2000 = getLandsat(2000);
+var data2005 = getLandsat(2005);
+var data2010 = getLandsat(2010);
+var data2015 = getLandsat(2015);
+var data2020 = getLandsat(2020);
+var data2025 = getLandsat(2025);
+
+// ==============================================================================
+// STATIC EXTERNAL DATASETS
+// ==============================================================================
+
+var dem = ee.Image("USGS/SRTMGL1_003").clip(pmrda); // 11. DEM
+var airTemp = ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR") // 5. Air Temp
+  .filterDate('2025-01-01', '2025-12-31').median().select('temperature_2m').subtract(273.15).clip(pmrda);
+var popDens = ee.ImageCollection("WorldPop/GP/100m/pop") // 8. Pop Density
+  .filterDate('2020-01-01', '2021-01-01').median().clip(pmrda);
+var builtUp = ee.Image("JRC/GHSL/P2023A/GHS_BUILT_S/2020").select(0).clip(pmrda); // 9. Built-Up Density // 9. Built-Up Density
+var isf = data2025.select('NDBI').expression('(NDBI + 1) / 2', {'NDBI': data2025.select('NDBI')}); // 6. ISF
+
+// ==============================================================================
+// MAP VISUALIZATION (High Contrast)
+// ==============================================================================
+
+// Add 2025 Indices (Turned off by default)
+Map.addLayer(data2025.select('LST'), {min: 25, max: 45, palette: ['blue', 'cyan', 'green', 'yellow', 'red']}, '1. LST (2025)', false);
+Map.addLayer(data2025.select('NDVI'), {min: -0.1, max: 0.6, palette: ['white', 'yellow', 'green', 'darkgreen']}, '2. NDVI (2025)', false);
+Map.addLayer(data2025.select('NDBI'), {min: -0.2, max: 0.4, palette: ['cyan', 'white', 'orange', 'red']}, '3. NDBI (2025)', false);
+Map.addLayer(data2025.select('MNDVI'), {min: -0.2, max: 0.4, palette: ['brown', 'white', 'blue']}, '4. MNDVI (2025)', false);
+Map.addLayer(airTemp, {min: 20, max: 35, palette: ['blue', 'yellow', 'red']}, '5. Air Temperature', false);
+Map.addLayer(isf, {min: 0, max: 1, palette: ['white', 'grey', 'black']}, '6. ISF (2025)', false);
+Map.addLayer(popDens, {min: 0, max: 50, palette: ['white', 'purple', 'black']}, '8. Population Density', false);
+Map.addLayer(builtUp, {min: 0, max: 100, palette: ['white', 'orange', 'red']}, '9. Built-up Density', false);
+Map.addLayer(data2025.select('Albedo'), {min: 0, max: 0.4, palette: ['black', 'white']}, '10. Surface Albedo (2025)', false);
+Map.addLayer(dem, {min: 500, max: 1200, palette: ['lightgreen', 'yellow', 'orange', 'red']}, '11. DEM', false);
+Map.addLayer(data2025.select('Emissivity'), {min: 0.98, max: 0.99, palette: ['blue', 'white', 'red']}, '12. Surface Emissivity (2025)', false);
+Map.addLayer(data2025.select('BT'), {min: 20, max: 40, palette: ['blue', 'yellow', 'red']}, '13. Brightness Temp (2025)', false);
+Map.addLayer(data2025.select('TFVI'), {min: -2, max: 2, palette: ['green', 'white', 'red']}, '14. Urban TFVI (2025)', false);
+Map.addLayer(data2025.select('NDWI'), {min: -0.2, max: 0.4, palette: ['brown', 'white', 'blue']}, '15. NDWI (2025)', false);
+Map.addLayer(data2025.select('SAVI'), {min: -0.1, max: 0.6, palette: ['white', 'yellow', 'green', 'darkgreen']}, '16. SAVI (2025)', false);
