@@ -1,0 +1,1686 @@
+// ================================================================
+// PUNE NIGHT-TIME HEAT ANALYSIS
+// 2012–2023 | March–May | Pune District, Maharashtra
+// ================================================================
+//
+// DATASETS
+// 1. ERA5-Land Monthly by Hour
+// 2. MODIS Terra MOD11A1 Version 6.1
+// 3. FAO/GAUL 2015 Level-2 Pune District
+//
+// VARIABLES
+// - Night Air Temperature
+// - Night LST
+// - Night Emissivity Band 31
+// - Night Emissivity Band 32
+// - Night Clear-Sky Coverage
+// - Night Air Temperature Trend
+// - Night LST Trend
+//
+// NIGHT PERIOD
+// 03:00–06:00 IST
+// = 21:00, 22:00, 23:00 and 00:00 UTC
+//
+// SEASON
+// March–May
+// ================================================================
+
+
+// ================================================================
+// 1. STUDY AREA
+// ================================================================
+
+var pune = ee.FeatureCollection(
+  'FAO/GAUL/2015/level2'
+)
+.filter(
+  ee.Filter.eq('ADM0_NAME', 'India')
+)
+.filter(
+  ee.Filter.eq('ADM1_NAME', 'Maharashtra')
+)
+.filter(
+  ee.Filter.eq('ADM2_NAME', 'Pune')
+);
+
+var puneGeometry = pune.geometry();
+
+Map.centerObject(puneGeometry, 9);
+
+Map.addLayer(
+  pune.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'Pune District Boundary'
+);
+
+print('Pune District Boundary');
+print(pune);
+
+
+// ================================================================
+// 2. ANALYSIS YEARS
+// ================================================================
+
+var years = ee.List.sequence(2012, 2023);
+
+print('Analysis Years');
+print(years);
+
+print('Number of Years');
+print(years.size());
+
+
+// ================================================================
+// 3. NIGHTTIME HOURS
+// ================================================================
+//
+// 03:00–06:00 IST
+//
+// IST = UTC + 5:30
+//
+// Therefore:
+// 03:00 IST → 21:30 UTC previous day
+// 04:00 IST → 22:30 UTC previous day
+// 05:00 IST → 23:30 UTC previous day
+// 06:00 IST → 00:30 UTC
+//
+// ERA5 hourly records are represented by UTC hour,
+// therefore the nearest hourly records used here are:
+//
+// 21, 22, 23 and 00 UTC
+//
+// ================================================================
+
+var nightHoursUTC = [21, 22, 23, 0];
+
+print('Night Hours UTC');
+print(nightHoursUTC);
+
+
+// ================================================================
+// 4. ERA5-LAND DATA
+// ================================================================
+
+var era5 = ee.ImageCollection(
+  'ECMWF/ERA5_LAND/MONTHLY_BY_HOUR'
+)
+.filterDate(
+  '2012-01-01',
+  '2024-01-01'
+)
+.select('temperature_2m');
+
+print('ERA5-Land Total Images');
+print(era5.size());
+
+
+// ================================================================
+// 5. MODIS MOD11A1 DATA
+// ================================================================
+
+var modis = ee.ImageCollection(
+  'MODIS/061/MOD11A1'
+)
+.filterBounds(puneGeometry)
+.filterDate(
+  '2012-01-01',
+  '2024-01-01'
+);
+
+print('MODIS MOD11A1 Images');
+print(modis.size());
+
+
+// ================================================================
+// 6. INSPECT ORIGINAL MODIS BANDS
+// ================================================================
+
+var firstMODIS = ee.Image(
+  modis.first()
+);
+
+print('First MODIS Image');
+print(firstMODIS);
+
+print('MODIS Band Names');
+print(firstMODIS.bandNames());
+
+
+// ================================================================
+// 7. MODIS NIGHTTIME QUALITY MASK
+// ================================================================
+//
+// MOD11A1 QC_Night:
+//
+// Bits 0–1 = Mandatory QA
+//
+// 00 = LST produced, good quality
+// 01 = LST produced, other quality
+// 10 = LST not produced due to cloud
+// 11 = LST not produced for other reasons
+//
+// We retain values 0 and 1 because both indicate that
+// an LST value has been produced.
+//
+// We additionally mask:
+// - zero LST digital values
+// - invalid/missing LST values
+//
+// ================================================================
+
+function maskNightLST(image) {
+
+  var qc = image.select('QC_Night');
+
+  var mandatoryQA =
+    qc.bitwiseAnd(3);
+
+  var goodQA =
+    mandatoryQA.lte(1);
+
+  var lstRaw =
+    image.select('LST_Night_1km');
+
+  var validLST =
+    lstRaw.gt(0);
+
+  return image
+    .updateMask(goodQA)
+    .updateMask(validLST);
+}
+
+
+var modisNight =
+  modis.map(maskNightLST);
+
+print('Quality-Masked MODIS Night Images');
+print(modisNight.size());
+
+
+// ================================================================
+// 8. CHECK MODIS NIGHTTIME LST DATA
+// ================================================================
+
+var testNightCollection =
+  modisNight.filterDate(
+    '2012-03-01',
+    '2012-06-01'
+  );
+
+print('2012 March-May Night MODIS Images');
+print(testNightCollection.size());
+
+
+var testNightLST =
+  testNightCollection
+    .select('LST_Night_1km')
+    .first();
+
+
+print('First Valid 2012 Night LST Image');
+print(testNightLST);
+
+
+// ================================================================
+// 9. YEARLY NIGHT AIR TEMPERATURE
+// ================================================================
+
+function yearlyNightAirTemperature(year) {
+
+  year = ee.Number(year);
+
+  var start =
+    ee.Date.fromYMD(
+      year,
+      3,
+      1
+    );
+
+  var end =
+    ee.Date.fromYMD(
+      year,
+      6,
+      1
+    );
+
+  var collection =
+    era5
+      .filterDate(
+        start,
+        end
+      )
+      .filter(
+        ee.Filter.inList(
+          'hour',
+          nightHoursUTC
+        )
+      );
+
+  var temperature =
+    collection
+      .mean()
+      .subtract(273.15)
+      .rename(
+        'Night_Air_Temperature_C'
+      )
+      .clip(puneGeometry)
+      .set('year', year);
+
+  return temperature;
+}
+
+
+// ================================================================
+// 10. YEARLY NIGHT LST
+// ================================================================
+
+function yearlyNightLST(year) {
+
+  year = ee.Number(year);
+
+  var start =
+    ee.Date.fromYMD(
+      year,
+      3,
+      1
+    );
+
+  var end =
+    ee.Date.fromYMD(
+      year,
+      6,
+      1
+    );
+
+  var collection =
+    modisNight
+      .filterDate(
+        start,
+        end
+      );
+
+  var lst =
+    collection
+      .select(
+        'LST_Night_1km'
+      )
+      .mean()
+      .multiply(0.02)
+      .subtract(273.15)
+      .rename(
+        'Night_LST_C'
+      )
+      .clip(puneGeometry)
+      .set('year', year);
+
+  return lst;
+}
+
+
+// ================================================================
+// 11. YEARLY NIGHT EMISSIVITY
+// ================================================================
+
+function yearlyNightEmissivity(year) {
+
+  year = ee.Number(year);
+
+  var start =
+    ee.Date.fromYMD(
+      year,
+      3,
+      1
+    );
+
+  var end =
+    ee.Date.fromYMD(
+      year,
+      6,
+      1
+    );
+
+  var collection =
+    modisNight
+      .filterDate(
+        start,
+        end
+      );
+
+  var emissivity31 =
+    collection
+      .select('Emis_31')
+      .mean()
+      .multiply(0.002)
+      .rename(
+        'Night_Emissivity_Band31'
+      );
+
+  var emissivity32 =
+    collection
+      .select('Emis_32')
+      .mean()
+      .multiply(0.002)
+      .rename(
+        'Night_Emissivity_Band32'
+      );
+
+  return emissivity31
+    .addBands(emissivity32)
+    .clip(puneGeometry)
+    .set('year', year);
+}
+
+
+// ================================================================
+// 12. YEARLY NIGHT CLEAR-SKY COVERAGE
+// ================================================================
+//
+// IMPORTANT:
+// Clear_night_cov is calculated from the ORIGINAL MODIS
+// collection rather than the LST quality-masked collection.
+//
+// ================================================================
+
+function yearlyNightClearCoverage(year) {
+
+  year = ee.Number(year);
+
+  var start =
+    ee.Date.fromYMD(
+      year,
+      3,
+      1
+    );
+
+  var end =
+    ee.Date.fromYMD(
+      year,
+      6,
+      1
+    );
+
+  var collection =
+    modis.filterDate(
+      start,
+      end
+    );
+
+  var clearSky =
+    collection
+      .select(
+        'Clear_night_cov'
+      )
+      .mean()
+      .multiply(0.0005)
+      .rename(
+        'Night_Clear_Sky_Coverage'
+      )
+      .clip(puneGeometry)
+      .set('year', year);
+
+  return clearSky;
+}
+
+
+// ================================================================
+// 13. CREATE ANNUAL IMAGE COLLECTIONS
+// ================================================================
+
+var nightAirCollection =
+  ee.ImageCollection.fromImages(
+    years.map(
+      yearlyNightAirTemperature
+    )
+  );
+
+
+var nightLSTCollection =
+  ee.ImageCollection.fromImages(
+    years.map(
+      yearlyNightLST
+    )
+  );
+
+
+var nightEmissivityCollection =
+  ee.ImageCollection.fromImages(
+    years.map(
+      yearlyNightEmissivity
+    )
+  );
+
+
+var nightClearCollection =
+  ee.ImageCollection.fromImages(
+    years.map(
+      yearlyNightClearCoverage
+    )
+  );
+
+
+print('Annual Air Temperature Images');
+print(nightAirCollection.size());
+
+print('Annual Night LST Images');
+print(nightLSTCollection.size());
+
+print('Annual Night Emissivity Images');
+print(nightEmissivityCollection.size());
+
+print('Annual Clear-Sky Images');
+print(nightClearCollection.size());
+
+
+// ================================================================
+// 14. NIGHT LST VALIDITY CHECK
+// ================================================================
+
+var firstNightLST =
+  ee.Image(
+    nightLSTCollection.first()
+  );
+
+print('NIGHT LST VALIDITY CHECK');
+
+print('First Annual Night LST Image');
+print(firstNightLST);
+
+print('First Annual Night LST Bands');
+print(
+  firstNightLST.bandNames()
+);
+
+
+var firstLSTStats =
+  firstNightLST.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean()
+      .combine({
+        reducer2:
+          ee.Reducer.minMax(),
+        sharedInputs:
+          true
+      }),
+
+    geometry:
+      puneGeometry,
+
+    scale:
+      1000,
+
+    maxPixels:
+      1e8,
+
+    bestEffort:
+      true
+  });
+
+
+print('First Annual Night LST Statistics');
+print(firstLSTStats);
+
+
+// ================================================================
+// 15. CLEAR-SKY VALIDITY CHECK
+// ================================================================
+
+var firstClearSky =
+  ee.Image(
+    nightClearCollection.first()
+  );
+
+print('CLEAR-SKY VALIDITY CHECK');
+
+print('First Annual Clear-Sky Image');
+print(firstClearSky);
+
+print('First Annual Clear-Sky Bands');
+print(
+  firstClearSky.bandNames()
+);
+
+
+var firstClearStats =
+  firstClearSky.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean(),
+
+    geometry:
+      puneGeometry,
+
+    scale:
+      1000,
+
+    maxPixels:
+      1e8,
+
+    bestEffort:
+      true
+  });
+
+
+print('First Annual Clear-Sky Statistics');
+print(firstClearStats);
+
+
+// ================================================================
+// 16. NIGHT AIR TEMPERATURE TREND
+// ================================================================
+
+function addYearBandAir(image) {
+
+  var year =
+    ee.Number(
+      image.get('year')
+    );
+
+  var yearBand =
+    ee.Image.constant(year)
+      .rename('Year')
+      .toFloat();
+
+  return image.addBands(
+    yearBand
+  );
+}
+
+
+var airRegression =
+  nightAirCollection.map(
+    addYearBandAir
+  );
+
+
+var airTrend =
+  airRegression
+    .select([
+      'Year',
+      'Night_Air_Temperature_C'
+    ])
+    .reduce(
+      ee.Reducer.linearFit()
+    )
+    .select('scale')
+    .rename(
+      'Night_Air_Temperature_Trend_C_per_year'
+    )
+    .clip(puneGeometry);
+
+
+// ================================================================
+// 17. NIGHT LST TREND
+// ================================================================
+
+function addYearBandLST(image) {
+
+  var year =
+    ee.Number(
+      image.get('year')
+    );
+
+  var yearBand =
+    ee.Image.constant(year)
+      .rename('Year')
+      .toFloat();
+
+  return image.addBands(
+    yearBand
+  );
+}
+
+
+var lstRegression =
+  nightLSTCollection.map(
+    addYearBandLST
+  );
+
+
+var lstTrend =
+  lstRegression
+    .select([
+      'Year',
+      'Night_LST_C'
+    ])
+    .reduce(
+      ee.Reducer.linearFit()
+    )
+    .select('scale')
+    .rename(
+      'Night_LST_Trend_C_per_year'
+    )
+    .clip(puneGeometry);
+
+
+// ================================================================
+// 18. TREND STATISTICS
+// ================================================================
+
+var airTrendStats =
+  airTrend.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean()
+      .combine({
+        reducer2:
+          ee.Reducer.minMax(),
+        sharedInputs:
+          true
+      }),
+
+    geometry:
+      puneGeometry,
+
+    scale:
+      11132,
+
+    maxPixels:
+      1e8,
+
+    bestEffort:
+      true
+  });
+
+
+var lstTrendStats =
+  lstTrend.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean()
+      .combine({
+        reducer2:
+          ee.Reducer.minMax(),
+        sharedInputs:
+          true
+      }),
+
+    geometry:
+      puneGeometry,
+
+    scale:
+      1000,
+
+    maxPixels:
+      1e8,
+
+    bestEffort:
+      true
+  });
+
+
+print('NIGHT AIR TEMPERATURE TREND');
+
+print('Air Trend Statistics');
+print(airTrendStats);
+
+
+print('NIGHT LST TREND');
+
+print('LST Trend Statistics');
+print(lstTrendStats);
+
+
+// ================================================================
+// 19. MAP TREND RESULTS
+// ================================================================
+
+Map.addLayer(
+  airTrend,
+  {
+    min: -0.1,
+    max: 0.1
+  },
+  'Night Air Temperature Trend °C/year'
+);
+
+
+Map.addLayer(
+  lstTrend,
+  {
+    min: -0.1,
+    max: 0.1
+  },
+  'Night LST Trend °C/year'
+);
+
+
+// ================================================================
+// 20. ANNUAL NUMERICAL RESULTS
+// ================================================================
+
+var annualNightResults =
+  ee.FeatureCollection(
+
+    years.map(function(year) {
+
+      year =
+        ee.Number(year);
+
+
+// ================================================================
+// 31. DIRECT GRAPH GENERATION IN GOOGLE EARTH ENGINE
+// No CSV download or external data import required
+// ================================================================
+
+// GRAPH 1: Annual mean nighttime air temperature
+
+var annualAirMeanChart = ui.Chart.feature.byFeature({
+  features: annualNightResults,
+  xProperty: 'Year',
+  yProperties: ['Night_Air_Mean_C']
+})
+.setChartType('LineChart')
+.setOptions({
+  title: 'Annual Variation of Nighttime Air Temperature in Pune District (2012–2023)',
+  hAxis: {
+    title: 'Year',
+    format: '####',
+    gridlines: {count: 12}
+  },
+  vAxis: {
+    title: 'Nighttime Air Temperature (°C)'
+  },
+  lineWidth: 2,
+  pointSize: 6,
+  colors: ['#1565C0'],
+  legend: {position: 'none'},
+  interpolateNulls: false
+});
+
+print('GRAPH 1: Annual Nighttime Air Temperature');
+print(annualAirMeanChart);
+
+
+// GRAPH 2: Annual minimum, mean and maximum temperature
+
+var annualAirRangeChart = ui.Chart.feature.byFeature({
+  features: annualNightResults,
+  xProperty: 'Year',
+  yProperties: [
+    'Night_Air_Min_C',
+    'Night_Air_Mean_C',
+    'Night_Air_Max_C'
+  ]
+})
+.setChartType('LineChart')
+.setOptions({
+  title: 'Annual Minimum, Mean and Maximum Nighttime Air Temperature',
+  hAxis: {
+    title: 'Year',
+    format: '####'
+  },
+  vAxis: {
+    title: 'Temperature (°C)'
+  },
+  lineWidth: 2,
+  pointSize: 5,
+  colors: ['#00A878', '#1565C0', '#E67E22'],
+  series: {
+    0: {lineDashStyle: [4, 3]},
+    1: {lineWidth: 3},
+    2: {lineDashStyle: [4, 3]}
+  },
+  legend: {
+    position: 'bottom'
+  }
+});
+
+print('GRAPH 2: Annual Temperature Range');
+print(annualAirRangeChart);
+
+
+      // ==========================================================
+      // AIR TEMPERATURE
+      // ==========================================================
+
+      var airImage =
+        ee.Image(
+          nightAirCollection
+            .filter(
+              ee.Filter.eq(
+                'year',
+                year
+              )
+            )
+            .first()
+        );
+
+
+      var airStats =
+        ee.Dictionary(
+
+          airImage.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean()
+              .combine({
+                reducer2:
+                  ee.Reducer.minMax(),
+                sharedInputs:
+                  true
+              }),
+
+            geometry:
+              puneGeometry,
+
+            scale:
+              11132,
+
+            maxPixels:
+              1e8,
+
+            bestEffort:
+              true
+          })
+        );
+
+
+      var airMean =
+        airStats.getNumber(
+          'Night_Air_Temperature_C_mean'
+        );
+
+      var airMin =
+        airStats.getNumber(
+          'Night_Air_Temperature_C_min'
+        );
+
+      var airMax =
+        airStats.getNumber(
+          'Night_Air_Temperature_C_max'
+        );
+
+
+      // ==========================================================
+      // NIGHT LST
+      // ==========================================================
+
+      var lstImage =
+        ee.Image(
+          nightLSTCollection
+            .filter(
+              ee.Filter.eq(
+                'year',
+                year
+              )
+            )
+            .first()
+        );
+
+
+      var lstStats =
+        ee.Dictionary(
+
+          lstImage.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean()
+              .combine({
+                reducer2:
+                  ee.Reducer.minMax(),
+                sharedInputs:
+                  true
+              }),
+
+            geometry:
+              puneGeometry,
+
+            scale:
+              1000,
+
+            maxPixels:
+              1e8,
+
+            bestEffort:
+              true
+          })
+        );
+
+
+      var lstMean =
+        lstStats.get(
+          'Night_LST_C_mean'
+        );
+
+      var lstMin =
+        lstStats.get(
+          'Night_LST_C_min'
+        );
+
+      var lstMax =
+        lstStats.get(
+          'Night_LST_C_max'
+        );
+
+
+      // ==========================================================
+      // EMISSIVITY
+      // ==========================================================
+
+      var emissivityImage =
+        ee.Image(
+          nightEmissivityCollection
+            .filter(
+              ee.Filter.eq(
+                'year',
+                year
+              )
+            )
+            .first()
+        );
+
+
+      var emissivityStats =
+        ee.Dictionary(
+
+          emissivityImage.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean(),
+
+            geometry:
+              puneGeometry,
+
+            scale:
+              1000,
+
+            maxPixels:
+              1e8,
+
+            bestEffort:
+              true
+          })
+        );
+
+
+      var emissivity31 =
+        emissivityStats.get(
+          'Night_Emissivity_Band31'
+        );
+
+      var emissivity32 =
+        emissivityStats.get(
+          'Night_Emissivity_Band32'
+        );
+
+
+      // ==========================================================
+      // CLEAR SKY
+      // ==========================================================
+
+      var clearImage =
+        ee.Image(
+          nightClearCollection
+            .filter(
+              ee.Filter.eq(
+                'year',
+                year
+              )
+            )
+            .first()
+        );
+
+
+      var clearStats =
+        ee.Dictionary(
+
+          clearImage.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean(),
+
+            geometry:
+              puneGeometry,
+
+            scale:
+              1000,
+
+            maxPixels:
+              1e8,
+
+            bestEffort:
+              true
+          })
+        );
+
+
+      var clearSky =
+        clearStats.get(
+          'Night_Clear_Sky_Coverage'
+        );
+
+
+      // ==========================================================
+      // CREATE FEATURE
+      // ==========================================================
+
+      return ee.Feature(
+        null,
+        {
+          'Year':
+            year,
+
+          'Night_Air_Mean_C':
+            airMean,
+
+          'Night_Air_Min_C':
+            airMin,
+
+          'Night_Air_Max_C':
+            airMax,
+
+          'Night_LST_Mean_C':
+            lstMean,
+
+          'Night_LST_Min_C':
+            lstMin,
+
+          'Night_LST_Max_C':
+            lstMax,
+
+          'Night_Emissivity_B31':
+            emissivity31,
+
+          'Night_Emissivity_B32':
+            emissivity32,
+
+          'Night_Clear_Sky_Coverage':
+            clearSky
+        }
+      );
+
+    })
+  );
+
+
+// ================================================================
+// 21. PRINT ANNUAL RESULTS
+// ================================================================
+
+print('ANNUAL NIGHT-TIME RESULTS');
+
+print('2012 - 2023');
+
+print('Annual Night-Time Results');
+print(annualNightResults);
+
+
+print('2012 ANNUAL RESULT');
+
+print(
+  annualNightResults
+    .filter(
+      ee.Filter.eq(
+        'Year',
+        2012
+      )
+    )
+);
+
+
+print('2023 ANNUAL RESULT');
+
+print(
+  annualNightResults
+    .filter(
+      ee.Filter.eq(
+        'Year',
+        2023
+      )
+    )
+);
+
+
+// ================================================================
+// 22. NUMERICAL OUTPUT ARRAYS
+// ================================================================
+
+print('ACTUAL NUMERICAL ANNUAL VALUES');
+
+
+// YEARS
+annualNightResults
+  .aggregate_array('Year')
+  .evaluate(function(values) {
+
+    print('Years');
+    print(values);
+
+  });
+
+
+// AIR MEAN
+annualNightResults
+  .aggregate_array('Night_Air_Mean_C')
+  .evaluate(function(values) {
+
+    print('Night Air Mean °C');
+    print(values);
+
+  });
+
+
+// AIR MIN
+annualNightResults
+  .aggregate_array('Night_Air_Min_C')
+  .evaluate(function(values) {
+
+    print('Night Air Minimum °C');
+    print(values);
+
+  });
+
+
+// AIR MAX
+annualNightResults
+  .aggregate_array('Night_Air_Max_C')
+  .evaluate(function(values) {
+
+    print('Night Air Maximum °C');
+    print(values);
+
+  });
+
+
+// LST MEAN
+annualNightResults
+  .aggregate_array('Night_LST_Mean_C')
+  .evaluate(function(values) {
+
+    print('Night LST Mean °C');
+    print(values);
+
+  });
+
+
+// LST MIN
+annualNightResults
+  .aggregate_array('Night_LST_Min_C')
+  .evaluate(function(values) {
+
+    print('Night LST Minimum °C');
+    print(values);
+
+  });
+
+
+// LST MAX
+annualNightResults
+  .aggregate_array('Night_LST_Max_C')
+  .evaluate(function(values) {
+
+    print('Night LST Maximum °C');
+    print(values);
+
+  });
+
+
+// EMISSIVITY BAND 31
+annualNightResults
+  .aggregate_array('Night_Emissivity_B31')
+  .evaluate(function(values) {
+
+    print('Night Emissivity Band 31');
+    print(values);
+
+  });
+
+
+// EMISSIVITY BAND 32
+annualNightResults
+  .aggregate_array('Night_Emissivity_B32')
+  .evaluate(function(values) {
+
+    print('Night Emissivity Band 32');
+    print(values);
+
+  });
+
+
+// CLEAR SKY
+annualNightResults
+  .aggregate_array('Night_Clear_Sky_Coverage')
+  .evaluate(function(values) {
+
+    print('Night Clear-Sky Coverage');
+    print(values);
+
+  });
+
+
+// ================================================================
+// 23. COMPLETE CLIENT-SIDE TABLE
+// ================================================================
+
+annualNightResults.evaluate(
+  function(fc) {
+
+    print(
+      'COMPLETE NUMERICAL ANNUAL NIGHT-TIME TABLE'
+    );
+
+    print(fc);
+
+  }
+);
+
+
+// ================================================================
+// 24. 2023 NIGHT LST
+// ================================================================
+
+var lst2023 =
+  ee.Image(
+    nightLSTCollection
+      .filter(
+        ee.Filter.eq(
+          'year',
+          2023
+        )
+      )
+      .first()
+  );
+
+
+Map.addLayer(
+  lst2023,
+  {
+    min: 15,
+    max: 35
+  },
+  'Night LST 2023'
+);
+
+
+// ================================================================
+// 25. 2023 NIGHT AIR TEMPERATURE
+// ================================================================
+
+var air2023 =
+  ee.Image(
+    nightAirCollection
+      .filter(
+        ee.Filter.eq(
+          'year',
+          2023
+        )
+      )
+      .first()
+  );
+
+
+Map.addLayer(
+  air2023,
+  {
+    min: 15,
+    max: 35
+  },
+  'Night Air Temperature 2023'
+);
+
+
+// ================================================================
+// 26. 2023 EMISSIVITY
+// ================================================================
+
+var emissivity2023 =
+  ee.Image(
+    nightEmissivityCollection
+      .filter(
+        ee.Filter.eq(
+          'year',
+          2023
+        )
+      )
+      .first()
+  );
+
+
+Map.addLayer(
+  emissivity2023.select(
+    'Night_Emissivity_Band31'
+  ),
+  {
+    min: 0.85,
+    max: 1.0
+  },
+  'Night Emissivity Band 31 - 2023'
+);
+
+
+// ================================================================
+// 27. 2023 CLEAR SKY
+// ================================================================
+
+var clear2023 =
+  ee.Image(
+    nightClearCollection
+      .filter(
+        ee.Filter.eq(
+          'year',
+          2023
+        )
+      )
+      .first()
+  );
+
+
+Map.addLayer(
+  clear2023,
+  {
+    min: 0,
+    max: 5
+  },
+  'Night Clear-Sky Coverage - 2023'
+);
+
+
+// ================================================================
+// 28. EXPORT ANNUAL NUMERICAL TABLE
+// ================================================================
+
+Export.table.toDrive({
+
+  collection:
+    annualNightResults,
+
+  description:
+    'Pune_Night_Heat_Analysis_2012_2023',
+
+  fileNamePrefix:
+    'Pune_Night_Heat_Analysis_2012_2023',
+
+  fileFormat:
+    'CSV'
+
+});
+
+
+// ================================================================
+// 29. EXPORT NIGHT AIR TEMPERATURE TREND
+// ================================================================
+
+Export.image.toDrive({
+
+  image:
+    airTrend,
+
+  description:
+    'Pune_Night_Air_Temperature_Trend_2012_2023',
+
+  fileNamePrefix:
+    'Pune_Night_Air_Temperature_Trend_2012_2023',
+
+  region:
+    puneGeometry,
+
+  scale:
+    11132,
+
+  maxPixels:
+    1e13,
+
+  fileFormat:
+    'GeoTIFF'
+
+});
+
+
+// ================================================================
+// 30. EXPORT NIGHT LST TREND
+// ================================================================
+
+Export.image.toDrive({
+
+  image:
+    lstTrend,
+
+  description:
+    'Pune_Night_LST_Trend_2012_2023',
+
+  fileNamePrefix:
+    'Pune_Night_LST_Trend_2012_2023',
+
+  region:
+    puneGeometry,
+
+  scale:
+    1000,
+
+  maxPixels:
+    1e13,
+
+  fileFormat:
+    'GeoTIFF'
+
+});
+
+
+// ================================================================
+// 31. EXPORT ANNUAL NIGHT AIR TEMPERATURE
+// ================================================================
+
+years.getInfo().forEach(
+  function(year) {
+
+    var image =
+      ee.Image(
+        nightAirCollection
+          .filter(
+            ee.Filter.eq(
+              'year',
+              year
+            )
+          )
+          .first()
+      );
+
+    Export.image.toDrive({
+
+      image:
+        image,
+
+      description:
+        'Pune_Night_Air_' + year,
+
+      fileNamePrefix:
+        'Pune_Night_Air_' + year,
+
+      region:
+        puneGeometry,
+
+      scale:
+        11132,
+
+      maxPixels:
+        1e13,
+
+      fileFormat:
+        'GeoTIFF'
+
+    });
+
+  }
+);
+
+
+// ================================================================
+// 32. EXPORT ANNUAL NIGHT LST
+// ================================================================
+
+years.getInfo().forEach(
+  function(year) {
+
+    var image =
+      ee.Image(
+        nightLSTCollection
+          .filter(
+            ee.Filter.eq(
+              'year',
+              year
+            )
+          )
+          .first()
+      );
+
+    Export.image.toDrive({
+
+      image:
+        image,
+
+      description:
+        'Pune_Night_LST_' + year,
+
+      fileNamePrefix:
+        'Pune_Night_LST_' + year,
+
+      region:
+        puneGeometry,
+
+      scale:
+        1000,
+
+      maxPixels:
+        1e13,
+
+      fileFormat:
+        'GeoTIFF'
+
+    });
+
+  }
+);
+
+
+// ================================================================
+// 33. EXPORT ANNUAL EMISSIVITY
+// ================================================================
+
+years.getInfo().forEach(
+  function(year) {
+
+    var image =
+      ee.Image(
+        nightEmissivityCollection
+          .filter(
+            ee.Filter.eq(
+              'year',
+              year
+            )
+          )
+          .first()
+      );
+
+    Export.image.toDrive({
+
+      image:
+        image,
+
+      description:
+        'Pune_Night_Emissivity_' + year,
+
+      fileNamePrefix:
+        'Pune_Night_Emissivity_' + year,
+
+      region:
+        puneGeometry,
+
+      scale:
+        1000,
+
+      maxPixels:
+        1e13,
+
+      fileFormat:
+        'GeoTIFF'
+
+    });
+
+  }
+);
+
+
+// ================================================================
+// 34. EXPORT ANNUAL CLEAR-SKY COVERAGE
+// ================================================================
+
+years.getInfo().forEach(
+  function(year) {
+
+    var image =
+      ee.Image(
+        nightClearCollection
+          .filter(
+            ee.Filter.eq(
+              'year',
+              year
+            )
+          )
+          .first()
+      );
+
+    Export.image.toDrive({
+
+      image:
+        image,
+
+      description:
+        'Pune_Night_Clear_Sky_' + year,
+
+      fileNamePrefix:
+        'Pune_Night_Clear_Sky_' + year,
+
+      region:
+        puneGeometry,
+
+      scale:
+        1000,
+
+      maxPixels:
+        1e13,
+
+      fileFormat:
+        'GeoTIFF'
+
+    });
+
+  }
+);
+
+
+// ================================================================
+// 35. FINAL STATUS
+// ================================================================
+
+print('================================================');
+
+print('ANALYSIS COMPLETE');
+
+print('================================================');
+
+print('Study Area: Pune District');
+
+print('Period: 2012–2023');
+
+print('Season: March–May');
+
+print('Night Hours: 03:00–06:00 IST');
+
+print('Night LST: MODIS Terra MOD11A1');
+
+print('Night Air Temperature: ERA5-Land');
+
+print('Annual Results: 12 Years');
+
+print(
+  'CSV Export: Pune_Night_Heat_Analysis_2012_2023'
+);
+
+print('Trend Units: °C/year');
+
+print('================================================');
